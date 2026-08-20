@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up UK Fuel Finder",
+        "description": "Enter your Fuel Finder API credentials from https://www.developer.fuel-finder.service.gov.uk\n\nGive this location a name (e.g. \"Home\" or \"Office\") so you can tell it apart if you set up more than one. You'll also need your Client ID, Client Secret, location (latitude/longitude), search radius, and how often to check for price updates (5-1440 minutes; default 15 matches API refresh rate).\n\nOptionally, add a free OpenRouteService API key (from https://openrouteservice.org/dev/#/signup) to also get driving distance to each station, not just straight-line distance. Leave blank to skip this - everything else works the same either way.",
+        "data": {
+          "location_name": "Location Name",
+          "client_id": "Client ID",
+          "client_secret": "Client Secret",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "radius": "Search Radius (miles)",
+          "update_interval": "Update Interval (minutes)",
+          "ors_api_key": "OpenRouteService API Key (optional, for driving distance)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid OAuth credentials. Please check your Client ID and Secret.",
+      "connection_error": "Failed to connect to Fuel Finder API."
+    },
+    "abort": {
+      "already_configured": "This location is already configured."
+    }
+  }
+}
