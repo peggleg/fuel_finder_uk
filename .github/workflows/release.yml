@@ -1,0 +1,62 @@
+name: Attach release asset
+
+# Runs whenever a release is published on GitHub (i.e. when you click
+# "Publish release" in the UI, or via `gh release create`).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-attach:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the exact tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Zip the integration folder
+        run: |
+          cd custom_components
+          zip -r ../fuel_finder_uk.zip fuel_finder_uk
+
+      - name: Validate the built zip
+        run: |
+          set -e
+
+          if [ ! -s fuel_finder_uk.zip ]; then
+            echo "::error::fuel_finder_uk.zip is missing or empty"
+            exit 1
+          fi
+
+          rm -rf /tmp/zip_check
+          mkdir /tmp/zip_check
+          unzip -q fuel_finder_uk.zip -d /tmp/zip_check
+
+          if [ ! -f /tmp/zip_check/fuel_finder_uk/manifest.json ]; then
+            echo "::error::manifest.json not found at fuel_finder_uk/manifest.json inside the zip"
+            exit 1
+          fi
+
+          python3 -c "import json; json.load(open('/tmp/zip_check/fuel_finder_uk/manifest.json'))" || {
+            echo "::error::manifest.json is not valid JSON"
+            exit 1
+          }
+
+          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('/tmp/zip_check/fuel_finder_uk/manifest.json'))['version'])")
+          TAG_VERSION="${{ github.event.release.tag_name }}"
+          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::manifest.json version ($MANIFEST_VERSION) does not match release tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+          echo "Validation passed: manifest.json present, valid JSON, version $MANIFEST_VERSION matches tag $TAG_VERSION"
+
+      - name: Attach zip to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: fuel_finder_uk.zip
