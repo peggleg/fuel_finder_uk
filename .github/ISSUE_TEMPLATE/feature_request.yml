@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest something new for this integration
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For rough or early-stage ideas you just want to talk through, [Discussions](https://github.com/peggleg/fuel_finder_uk/discussions) might be a better fit than an Issue. Use this form once you have something concrete in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do that you currently can't?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
