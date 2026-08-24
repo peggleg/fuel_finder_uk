@@ -1,64 +1,78 @@
-name: Attach release asset
+name: Release
 
-# Runs whenever a release is published on GitHub (i.e. when you click
-# "Publish release" in the UI, or via `gh release create`).
 on:
   release:
     types: [published]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  build-and-attach:
+  release_zip_file:
+    name: Prepare release asset
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Upload the zip as a release asset.
+      contents: write
+      # Sign the provenance statement and record it against the repository.
+      id-token: write
+      attestations: write
     steps:
-      - name: Checkout the exact tagged commit
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Zip the integration folder
-        run: |
-          zip -r fuel_finder_uk.zip custom_components/fuel_finder_uk
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-      - name: List zip contents (for debugging in the Actions log)
-        run: unzip -l fuel_finder_uk.zip
-
-      - name: Validate the built zip
+      - name: Check manifest version matches release tag
         run: |
           set -e
-
-          if [ ! -s fuel_finder_uk.zip ]; then
-            echo "::error::fuel_finder_uk.zip is missing or empty"
-            exit 1
-          fi
-
-          rm -rf /tmp/zip_check
-          mkdir /tmp/zip_check
-          unzip -q fuel_finder_uk.zip -d /tmp/zip_check
-
-          if [ ! -f /tmp/zip_check/custom_components/fuel_finder_uk/manifest.json ]; then
-            echo "::error::manifest.json not found at custom_components/fuel_finder_uk/manifest.json inside the zip"
-            exit 1
-          fi
-
-          python3 -c "import json; json.load(open('/tmp/zip_check/custom_components/fuel_finder_uk/manifest.json'))" || {
-            echo "::error::manifest.json is not valid JSON"
-            exit 1
-          }
-
-          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('/tmp/zip_check/custom_components/fuel_finder_uk/manifest.json'))['version'])")
-          TAG_VERSION="${{ github.event.release.tag_name }}"
+          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('custom_components/fuel_finder_uk/manifest.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME}"
           if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::manifest.json version ($MANIFEST_VERSION) does not match release tag ($TAG_VERSION)"
             exit 1
           fi
+          echo "manifest.json version $MANIFEST_VERSION matches tag $TAG_VERSION"
 
-          echo "Validation passed: manifest.json present, valid JSON, version $MANIFEST_VERSION matches tag $TAG_VERSION"
+      - name: Create zip
+        run: |
+          cd custom_components/fuel_finder_uk
+          zip fuel_finder_uk.zip -r ./
 
-      - name: Attach zip to the release
-        uses: softprops/action-gh-release@v2
+      - name: List zip contents (for debugging in the Actions log)
+        run: unzip -l custom_components/fuel_finder_uk/fuel_finder_uk.zip
+
+      - name: Validate manifest.json is present and valid inside the zip
+        run: |
+          set -e
+          rm -rf /tmp/zip_check
+          mkdir /tmp/zip_check
+          unzip -q custom_components/fuel_finder_uk/fuel_finder_uk.zip -d /tmp/zip_check
+
+          if [ ! -f /tmp/zip_check/manifest.json ]; then
+            echo "::error::manifest.json not found at the root of the built zip"
+            exit 1
+          fi
+
+          python3 -c "import json; json.load(open('/tmp/zip_check/manifest.json'))" || {
+            echo "::error::manifest.json is not valid JSON"
+            exit 1
+          }
+
+          echo "Validation passed: manifest.json present at zip root and valid JSON"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: fuel_finder_uk.zip
+          subject-path: ./custom_components/fuel_finder_uk/fuel_finder_uk.zip
+
+      - name: Upload zip to release
+        run: gh release upload "${GITHUB_REF_NAME}" ./custom_components/fuel_finder_uk/fuel_finder_uk.zip#fuel_finder_uk.zip --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
