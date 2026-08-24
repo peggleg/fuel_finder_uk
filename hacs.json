@@ -2,5 +2,6 @@
   "name": "UK Fuel Finder",
   "render_readme": true,
   "zip_release": true,
-  "filename": "fuel_finder_uk.zip"
+  "filename": "fuel_finder_uk.zip",
+  "homeassistant": "2024.1.0"
 }
