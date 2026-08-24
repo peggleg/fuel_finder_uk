@@ -1,7 +1,7 @@
 {
   "domain": "fuel_finder_uk",
   "name": "UK Fuel Finder",
-  "codeowners": ["@yourusername"],
+  "codeowners": ["@peggleg"],
   "config_flow": true,
   "documentation": "https://github.com/peggleg/fuel_finder_uk",
   "icon": "mdi:gas-cylinder",
