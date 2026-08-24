@@ -67,6 +67,68 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Allow editing an existing entry's settings, other than its location."""
+        errors: dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+        current = reconfigure_entry.data
+
+        if user_input is not None:
+            valid = await self._validate_credentials(
+                user_input["client_id"],
+                user_input["client_secret"],
+            )
+
+            if not valid:
+                errors["base"] = "invalid_auth"
+            else:
+                # Coordinates are not part of this form - carry the original
+                # values over untouched, since they define the entry's
+                # unique_id and are used as cache keys elsewhere.
+                updated_data = {
+                    **user_input,
+                    "latitude": current["latitude"],
+                    "longitude": current["longitude"],
+                }
+
+                self.hass.config_entries.async_update_entry(
+                    reconfigure_entry,
+                    data=updated_data,
+                    title=f"UK Fuel Finder - {user_input['location_name']}",
+                )
+                await self.hass.config_entries.async_reload(reconfigure_entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
+
+        reconfigure_schema = vol.Schema(
+            {
+                vol.Required(
+                    "location_name", default=current.get("location_name", "")
+                ): cv.string,
+                vol.Required("client_id", default=current.get("client_id", "")): cv.string,
+                vol.Required(
+                    "client_secret", default=current.get("client_secret", "")
+                ): cv.string,
+                vol.Optional("radius", default=current.get("radius", 5)): cv.positive_int,
+                vol.Optional(
+                    "update_interval", default=current.get("update_interval", 15)
+                ): cv.positive_int,
+                vol.Optional(
+                    "ors_api_key", default=current.get("ors_api_key", "")
+                ): cv.string,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=reconfigure_schema,
+            errors=errors,
+            description_placeholders={
+                "location_name": current.get("location_name", "this location"),
+            },
+        )
+
     async def _validate_credentials(self, client_id: str, client_secret: str) -> bool:
         """Validate OAuth credentials."""
         import aiohttp

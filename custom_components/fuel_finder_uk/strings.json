@@ -14,6 +14,18 @@
           "update_interval": "Update Interval (minutes)",
           "ors_api_key": "OpenRouteService API Key (optional, for driving distance)"
         }
+      },
+      "reconfigure": {
+        "title": "Edit UK Fuel Finder",
+        "description": "Update the settings for {location_name}. The location's coordinates aren't editable here - remove and re-add the integration if you need to change where it's tracking.",
+        "data": {
+          "location_name": "Location Name",
+          "client_id": "Client ID",
+          "client_secret": "Client Secret",
+          "radius": "Search Radius (miles)",
+          "update_interval": "Update Interval (minutes)",
+          "ors_api_key": "OpenRouteService API Key (optional, for driving distance)"
+        }
       }
     },
     "error": {
@@ -21,7 +33,8 @@
       "connection_error": "Failed to connect to Fuel Finder API."
     },
     "abort": {
-      "already_configured": "This location is already configured."
+      "already_configured": "This location is already configured.",
+      "reconfigure_successful": "Settings updated successfully."
     }
   }
 }
