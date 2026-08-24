@@ -1,4 +1,7 @@
 # UK Fuel Finder for Home Assistant
+[![License](https://img.shields.io/github/license/peggleg/fuel_finder_uk)](LICENSE)
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+<a href="https://buymeacoffee.com/peggleg"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="20"></a>
 
 Track petrol and diesel prices in your Home Assistant setup using actual UK government data. Stop guessing which petrol station has the cheapest fuel nearby. This integration shows you exactly where to go.
 
