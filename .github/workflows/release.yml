@@ -20,8 +20,10 @@ jobs:
 
       - name: Zip the integration folder
         run: |
-          cd custom_components/fuel_finder_uk
-          zip -r ../../fuel_finder_uk.zip .
+          zip -r fuel_finder_uk.zip custom_components/fuel_finder_uk
+
+      - name: List zip contents (for debugging in the Actions log)
+        run: unzip -l fuel_finder_uk.zip
 
       - name: Validate the built zip
         run: |
@@ -36,17 +38,17 @@ jobs:
           mkdir /tmp/zip_check
           unzip -q fuel_finder_uk.zip -d /tmp/zip_check
 
-          if [ ! -f /tmp/zip_check/manifest.json ]; then
-            echo "::error::manifest.json not found at the root of the zip"
+          if [ ! -f /tmp/zip_check/custom_components/fuel_finder_uk/manifest.json ]; then
+            echo "::error::manifest.json not found at custom_components/fuel_finder_uk/manifest.json inside the zip"
             exit 1
           fi
 
-          python3 -c "import json; json.load(open('/tmp/zip_check/manifest.json'))" || {
+          python3 -c "import json; json.load(open('/tmp/zip_check/custom_components/fuel_finder_uk/manifest.json'))" || {
             echo "::error::manifest.json is not valid JSON"
             exit 1
           }
 
-          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('/tmp/zip_check/manifest.json'))['version'])")
+          MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('/tmp/zip_check/custom_components/fuel_finder_uk/manifest.json'))['version'])")
           TAG_VERSION="${{ github.event.release.tag_name }}"
           if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::manifest.json version ($MANIFEST_VERSION) does not match release tag ($TAG_VERSION)"
