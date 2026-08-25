@@ -1,5 +1,6 @@
 """Config flow for Fuel Finder UK integration."""
 import logging
+import uuid
 from typing import Any
 
 import voluptuous as vol
@@ -31,6 +32,22 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def _is_duplicate_location(
+        self, latitude: float, longitude: float, exclude_entry_id: str | None = None
+    ) -> bool:
+        """Check whether another entry already tracks this exact location.
+
+        unique_id is no longer derived from coordinates (it's a permanent
+        random ID assigned at creation), so duplicate-location prevention
+        has to be done explicitly instead of relying on unique_id matching.
+        """
+        for entry in self._async_current_entries():
+            if entry.entry_id == exclude_entry_id:
+                continue
+            if entry.data.get("latitude") == latitude and entry.data.get("longitude") == longitude:
+                return True
+        return False
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -46,11 +63,15 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not valid:
                 errors["base"] = "invalid_auth"
+            elif self._is_duplicate_location(user_input["latitude"], user_input["longitude"]):
+                errors["base"] = "already_configured"
             else:
-                await self.async_set_unique_id(
-                    f"{user_input['latitude']}-{user_input['longitude']}"
-                )
-                self._abort_if_unique_id_configured()
+                # unique_id is a permanent random ID, independent of the
+                # coordinates, so that location can be edited later via
+                # reconfigure without ever needing to change unique_id
+                # (which Home Assistant expects to stay constant for the
+                # life of the entry).
+                await self.async_set_unique_id(str(uuid.uuid4()))
 
                 return self.async_create_entry(
                     title=f"UK Fuel Finder - {user_input['location_name']}",
@@ -70,7 +91,7 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Allow editing an existing entry's settings, other than its location."""
+        """Allow editing an existing entry's settings, including its location."""
         errors: dict[str, str] = {}
         reconfigure_entry = self._get_reconfigure_entry()
         current = reconfigure_entry.data
@@ -83,22 +104,22 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not valid:
                 errors["base"] = "invalid_auth"
+            elif self._is_duplicate_location(
+                user_input["latitude"],
+                user_input["longitude"],
+                exclude_entry_id=reconfigure_entry.entry_id,
+            ):
+                errors["base"] = "already_configured"
             else:
-                # Coordinates are not part of this form - carry the original
-                # values over untouched, since they define the entry's
-                # unique_id and are used as cache keys elsewhere.
-                updated_data = {
-                    **user_input,
-                    "latitude": current["latitude"],
-                    "longitude": current["longitude"],
-                }
-
                 self.hass.config_entries.async_update_entry(
                     reconfigure_entry,
-                    data=updated_data,
+                    data=user_input,
                     title=f"UK Fuel Finder - {user_input['location_name']}",
                 )
-                await self.hass.config_entries.async_reload(reconfigure_entry.entry_id)
+                # No explicit reload here - the update listener registered in
+                # __init__.py already reloads the entry automatically whenever
+                # its data changes. Calling async_reload() again here caused
+                # two overlapping reloads racing each other.
                 return self.async_abort(reason="reconfigure_successful")
 
         reconfigure_schema = vol.Schema(
@@ -110,6 +131,12 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     "client_secret", default=current.get("client_secret", "")
                 ): cv.string,
+                vol.Required(
+                    "latitude", default=current.get("latitude")
+                ): cv.latitude,
+                vol.Required(
+                    "longitude", default=current.get("longitude")
+                ): cv.longitude,
                 vol.Optional("radius", default=current.get("radius", 5)): cv.positive_int,
                 vol.Optional(
                     "update_interval", default=current.get("update_interval", 15)
