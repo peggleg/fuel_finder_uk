@@ -1,11 +1,10 @@
 # UK Fuel Finder for Home Assistant
-[![License](https://img.shields.io/github/license/peggleg/fuel_finder_uk)](LICENSE)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 <a href="https://buymeacoffee.com/peggleg"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="20"></a>
 
 Track petrol and diesel prices in your Home Assistant setup using actual UK government data. Stop guessing which petrol station has the cheapest fuel nearby. This integration shows you exactly where to go.
 
-Gets the cheapest petrol and diesel prices near you, updates every 15 minutes, and puts them in Home Assistant so you can build automations around them. Track more than one address (e.g. home and work) and each gets its own set of sensors.
+Gets the cheapest petrol and diesel prices near you, updates every 15 minutes, and puts them in Home Assistant so you can build automations around them. Track more than one address (e.g. home and work) and each gets its own set of sensors. Tag a favourite station too, and compare its price against the cheapest one.
 
 Fuel types tracked: E5 and E10 petrol, B7 and Super diesel.
 
@@ -42,11 +41,23 @@ If you want actual driving distance too, grab a free API key from [OpenRouteServ
 
 This is entirely optional. Skip it and everything works exactly as before, just with straight-line distance only. Driving distances are cached for a day at a time, since roads don't move, so this barely touches your API quota even on a free account.
 
+### Favourite station
+
+Pick a station you already use as your favourite, and get its prices right next to the cheapest one. No maths involved, just compare and decide.
+
+Gives you a "Favourite Station" dropdown plus four price sensors (E10, E5, diesel, super diesel) for whichever station you pick, same shape as the cheapest-price sensors.
+
+The dropdown only lists stations that were near you when you first set up the integration, kept separate from your live search radius. Narrowing that radius later won't drop your favourite. Widening it won't add new options to the dropdown either. To pick from a different set of stations, remove and re-add the integration.
+
+Leave it on "None" and the four favourite sensors just won't show anything.
+
 ## What you get
 
 Price sensors for E10, E5, diesel, and super diesel, updated every 15 minutes. Each shows the cheapest price in your area and which station has it. Click into a sensor and you'll see the station name, brand, address, coordinates, straight-line distance, and driving distance (if you've set up an OpenRouteService key). Petrol sensors use a pump icon, diesel sensors use the outline version, so they're easy to tell apart at a glance.
 
 You also get a sensor for how many stations are nearby, with an attribute listing each one (name, brand, distance, postcode, and which fuel types it sells), plus a sensor for when the data was last updated.
+
+Favourite a station and you'll get its E10, E5, diesel, and super diesel prices as their own sensors too.
 
 Not every station sells super diesel. If none of your nearby stations do, that sensor will show as unavailable rather than a price.
 
@@ -82,6 +93,8 @@ Want to change how often prices update? Re-open the integration settings (Settin
 **No stations showing up:** Try a bigger search radius (10 miles instead of 5). Make sure your coordinates are right by checking them in Google Maps.
 
 **Super diesel sensor shows unavailable:** Normal if none of your nearby stations sell it. It's a less common grade than standard diesel and petrol.
+
+**Favourite station sensors show unavailable:** Either nothing's picked yet, or that station doesn't sell that fuel type.
 
 **Prices look old:** Retail stations report prices with a 15-minute delay. The government data is only as fresh as what retailers submit.
 
