@@ -54,6 +54,19 @@ async def async_setup_entry(
             )
         )
 
+    # Add favourite-station price sensor for each fuel type. All 4 always
+    # exist regardless of what the favourite (once picked) actually sells -
+    # they simply show unavailable for fuel types it doesn't stock.
+    for fuel_code, fuel_name in FUEL_TYPES.items():
+        entities.append(
+            FuelFinderFavouritePriceSensor(
+                coordinator,
+                entry,
+                fuel_code,
+                fuel_name,
+            )
+        )
+
     # Add additional sensors
     entities.extend(
         [
@@ -159,6 +172,84 @@ class FuelFinderCheapestPriceSensor(FuelFinderBaseSensor):
             "latitude": location.get("latitude") or station.get("lat"),
             "longitude": location.get("longitude") or station.get("lon"),
             "last_updated": cheapest.get("last_updated"),
+            "distance": station.get("distance"),
+            "distance_driving": station.get("distance_driving"),
+        }
+
+
+class FuelFinderFavouritePriceSensor(FuelFinderBaseSensor):
+    """Sensor for the favourite station's price of one fuel type.
+
+    Mirrors FuelFinderCheapestPriceSensor's shape exactly - price as the
+    state, station info as attributes - just keyed to whichever station is
+    currently selected as the favourite (via the select entity) instead of
+    "whichever is cheapest". Shows unavailable when no favourite is picked,
+    or when the favourite doesn't sell this particular fuel type.
+    """
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        entry: ConfigEntry,
+        fuel_type: str,
+        fuel_name: str,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, entry)
+        self.fuel_type = fuel_type
+        self.fuel_name = fuel_name
+
+        self._attr_unique_id = f"{entry.entry_id}-favourite-{fuel_type}"
+        self._attr_name = f"Favourite Station {fuel_name} Price"
+        self._attr_native_unit_of_measurement = "p/L"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = FUEL_ICONS.get(fuel_type, "mdi:gas-station")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the favourite station's price for this fuel type."""
+        if not self.coordinator.data:
+            return None
+
+        favourite = self.coordinator.get_favourite_price(self.fuel_type)
+
+        if favourite:
+            return favourite.get("price")
+
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra attributes."""
+        if not self.coordinator.data:
+            return {}
+
+        favourite = self.coordinator.get_favourite_price(self.fuel_type)
+
+        if not favourite:
+            return {}
+
+        station = favourite.get("station", {})
+        location = station.get("location") or {}
+
+        return {
+            "station_name": station.get("trading_name") or station.get("name"),
+            "brand": station.get("brand_name"),
+            "postcode": location.get("postcode"),
+            "station_address": ", ".join(
+                filter(
+                    None,
+                    [
+                        location.get("address_line_1"),
+                        location.get("address_line_2"),
+                        location.get("city"),
+                        location.get("postcode"),
+                    ],
+                )
+            ) or station.get("address"),
+            "latitude": location.get("latitude") or station.get("lat"),
+            "longitude": location.get("longitude") or station.get("lon"),
+            "last_updated": favourite.get("last_updated"),
             "distance": station.get("distance"),
             "distance_driving": station.get("distance_driving"),
         }
