@@ -37,6 +37,37 @@ FUEL_TYPE_ALIASES: dict[str, list[str]] = {
 }
 
 
+def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    """Calculate straight-line distance between two points, in miles."""
+    from math import radians, cos, sin, asin, sqrt
+
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * asin(sqrt(a))
+    return 3959 * c  # Earth's radius in miles
+
+
+def station_id(record: dict) -> str | None:
+    """Extract a station's identifier, trying every field name seen in the API."""
+    return (
+        record.get("node_id")
+        or record.get("uuid")
+        or record.get("id")
+        or record.get("pfs_id")
+        or record.get("site_id")
+    )
+
+
+def find_station_by_id(records: list[dict], target_id: str) -> dict | None:
+    """Scan a list of raw station or price records for a matching ID."""
+    for record in records:
+        if isinstance(record, dict) and station_id(record) == target_id:
+            return record
+    return None
+
+
 class FuelFinderDataCoordinator(DataUpdateCoordinator):
     """Data coordinator for Fuel Finder API."""
 
@@ -64,6 +95,22 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
         # Cache of driving distances keyed by station node_id:
         # {node_id: {"distance_driving": float, "cached_at": datetime}}
         self._driving_distance_cache: dict[str, dict[str, Any]] = {}
+
+        # Favourite station tracking. favourite_search_radius is captured
+        # once at initial setup and never changes afterward (not part of
+        # the reconfigure schema) - it defines which stations can ever be
+        # picked as a favourite, independent of the live, reconfigurable
+        # "radius" used for cheapest-price comparisons. favourite_node_id
+        # is set live by the select entity, not stored in config entry
+        # data, so picking a favourite never triggers a full entry reload.
+        self.favourite_search_radius = entry.data.get("favourite_search_radius", self.radius)
+        self.favourite_node_id: str | None = None
+
+        # Raw, unfiltered station/price data from the last successful
+        # fetch, kept around so a favourite selection outside the live
+        # radius can be resolved instantly without a fresh API fetch.
+        self._raw_stations: list[dict] = []
+        self._raw_prices: list[dict] = []
         
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API."""
@@ -302,6 +349,12 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
             
             _LOGGER.debug(f"Fetched {len(all_prices)} total prices")
             prices_data = {"data": all_prices}
+
+            # Keep the raw, unfiltered data around so a favourite station
+            # outside the live radius can be resolved instantly later
+            # (e.g. from async_set_favourite) without a fresh API fetch.
+            self._raw_stations = all_stations
+            self._raw_prices = all_prices
             
             # Filter stations by radius and location
             try:
@@ -310,6 +363,17 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
                 import traceback
                 _LOGGER.error(f"Error filtering stations: {err}\n{traceback.format_exc()}")
                 raise UpdateFailed(f"Error filtering stations: {err}") from err
+
+            # Separately, build the list of stations pickable as a favourite,
+            # using the frozen setup-time radius rather than the live one -
+            # this can be wider or narrower than filtered_stations above.
+            try:
+                favourite_candidates = self._filter_nearby_stations(
+                    stations_data, radius=self.favourite_search_radius
+                )
+            except Exception as err:
+                _LOGGER.debug(f"Error building favourite candidate list: {err}")
+                favourite_candidates = []
             
             # Enrich with driving distance if an ORS API key is configured.
             # This never raises - a failure here just means stations keep
@@ -328,12 +392,22 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
                 import traceback
                 _LOGGER.error(f"Error matching prices: {err}\n{traceback.format_exc()}")
                 raise UpdateFailed(f"Error matching prices: {err}") from err
+
+            # Resolve the currently-selected favourite station's own data
+            # (price, distance, driving distance), regardless of whether
+            # it happens to fall inside the live radius or not.
+            favourite_station, favourite_price_record = await self._async_resolve_favourite(
+                session, filtered_stations, prices_by_station
+            )
             
             self.last_successful_update = dt_util.utcnow()
             
             return {
                 "stations": filtered_stations,
                 "prices": prices_by_station,
+                "favourite_candidates": favourite_candidates,
+                "favourite_station": favourite_station,
+                "favourite_price_record": favourite_price_record,
                 "location": {
                     "latitude": self.latitude,
                     "longitude": self.longitude,
@@ -348,20 +422,92 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
             _LOGGER.error(f"Unexpected error in _async_get_all_data: {err}\n{traceback.format_exc()}")
             raise UpdateFailed(f"Unexpected error in data fetch: {err}") from err
 
-    def _filter_nearby_stations(self, stations_data: dict) -> list[dict]:
-        """Filter stations within radius."""
-        from math import radians, cos, sin, asin, sqrt
-        
-        def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-            """Calculate distance between two points in miles."""
-            lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-            dlon = lon2 - lon1
-            dlat = lat2 - lat1
-            a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-            c = 2 * asin(sqrt(a))
-            miles = 3959 * c  # Earth's radius in miles
-            return miles
-        
+    async def _async_resolve_favourite(
+        self,
+        session: aiohttp.ClientSession,
+        filtered_stations: list[dict],
+        prices_by_station: dict[str, Any],
+    ) -> tuple[dict | None, dict | None]:
+        """Find the selected favourite station's current data, wherever it lives.
+
+        Checks the already-filtered (live radius) station list first, since
+        that data is already fully enriched (distance, driving distance).
+        Falls back to a direct lookup in the raw, unfiltered data if the
+        favourite currently sits outside the live radius.
+        """
+        if not self.favourite_node_id:
+            return None, None
+
+        favourite_station = None
+        for candidate in filtered_stations:
+            if station_id(candidate) == self.favourite_node_id:
+                favourite_station = candidate
+                break
+
+        if favourite_station is None:
+            favourite_station = find_station_by_id(self._raw_stations, self.favourite_node_id)
+            if favourite_station is not None:
+                location = favourite_station.get("location") or {}
+                lat = location.get("latitude") or favourite_station.get("lat")
+                lon = location.get("longitude") or favourite_station.get("lon")
+                if lat is not None and lon is not None:
+                    try:
+                        favourite_station["distance"] = round(
+                            haversine(self.longitude, self.latitude, float(lon), float(lat)), 1
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                if self.ors_api_key:
+                    try:
+                        await self._async_enrich_driving_distances(session, [favourite_station])
+                    except Exception as err:
+                        _LOGGER.debug(f"Driving distance enrichment for favourite failed: {err}")
+
+        if favourite_station is None:
+            _LOGGER.debug(f"Favourite station {self.favourite_node_id} not found in current API data")
+            return None, None
+
+        favourite_price_record = prices_by_station.get(self.favourite_node_id)
+        if favourite_price_record is None:
+            favourite_price_record = find_station_by_id(self._raw_prices, self.favourite_node_id)
+
+        return favourite_station, favourite_price_record
+
+    async def async_set_favourite(self, node_id: str | None) -> None:
+        """Update the selected favourite station without a full data refresh.
+
+        Reuses the raw station/price data already fetched on the last
+        regular update cycle - no government API calls are made here, only
+        (if needed) a single-station ORS lookup for driving distance.
+        """
+        self.favourite_node_id = node_id
+
+        if not self.data:
+            return
+
+        if node_id is None:
+            self.data["favourite_station"] = None
+            self.data["favourite_price_record"] = None
+            self.async_set_updated_data(self.data)
+            return
+
+        async with aiohttp.ClientSession() as session:
+            favourite_station, favourite_price_record = await self._async_resolve_favourite(
+                session,
+                self.data.get("stations", []),
+                self.data.get("prices", {}),
+            )
+
+        self.data["favourite_station"] = favourite_station
+        self.data["favourite_price_record"] = favourite_price_record
+        self.async_set_updated_data(self.data)
+
+    def _filter_nearby_stations(self, stations_data: dict, radius: float | None = None) -> list[dict]:
+        """Filter stations within radius (defaults to the live, reconfigurable radius)."""
+        if radius is None:
+            radius = self.radius
+
         # Handle different possible response structures
         if not stations_data:
             _LOGGER.warning("No stations data received")
@@ -421,14 +567,14 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
                     
                 distance = haversine(self.longitude, self.latitude, station_lon, station_lat)
                 
-                if distance <= self.radius:
+                if distance <= radius:
                     station["distance"] = round(distance, 1)
                     filtered.append(station)
             except Exception as err:
                 _LOGGER.debug(f"Error processing station: {err}")
                 continue
         
-        _LOGGER.debug(f"Found {len(filtered)} stations within {self.radius}mi from {len(stations)} total")
+        _LOGGER.debug(f"Found {len(filtered)} stations within {radius}mi from {len(stations)} total")
         return filtered
 
     async def _async_enrich_driving_distances(
@@ -685,5 +831,58 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
             return cheapest
         except Exception as err:
             _LOGGER.error(f"Error getting cheapest price: {err}")
+            return None
+
+    def get_favourite_price(self, fuel_type: str) -> dict[str, Any] | None:
+        """Get the favourite station's price for a specific fuel type.
+
+        Returns None if no favourite is selected, the favourite couldn't be
+        found in the latest data, or the favourite doesn't sell this fuel
+        type. Unlike get_cheapest_price, this looks up one specific station
+        rather than searching for a minimum.
+        """
+        if not self.data:
+            return None
+
+        favourite_station = self.data.get("favourite_station")
+        favourite_price_record = self.data.get("favourite_price_record")
+
+        if not favourite_station or not favourite_price_record:
+            return None
+
+        try:
+            accepted_codes = set(FUEL_TYPE_ALIASES.get(fuel_type, [fuel_type]))
+
+            prices = (
+                favourite_price_record.get("fuel_prices")
+                or favourite_price_record.get("prices")
+                or []
+            )
+            if not prices and "fuel_type" in favourite_price_record:
+                prices = [favourite_price_record]
+
+            for price in prices:
+                if not isinstance(price, dict):
+                    continue
+
+                raw_fuel_type = price.get("fuel_type", "")
+                if raw_fuel_type not in accepted_codes:
+                    continue
+
+                try:
+                    price_value = float(price.get("price", 0))
+                    if price_value > 0:
+                        return {
+                            "station": favourite_station,
+                            "price": price_value,
+                            "last_updated": price.get("price_last_updated") or price.get("last_updated"),
+                        }
+                except (ValueError, TypeError):
+                    continue
+
+            # Favourite exists but doesn't sell this fuel type
+            return None
+        except Exception as err:
+            _LOGGER.error(f"Error getting favourite price: {err}")
             return None
 

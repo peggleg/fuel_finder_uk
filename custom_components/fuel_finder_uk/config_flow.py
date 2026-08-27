@@ -73,9 +73,20 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # life of the entry).
                 await self.async_set_unique_id(str(uuid.uuid4()))
 
+                # Freeze the search radius used for the favourite-station
+                # picker at whatever radius was chosen right now. This is
+                # deliberately separate from "radius" (which stays live and
+                # editable via reconfigure) so narrowing/widening the price
+                # search radius later never affects which stations remain
+                # pickable as a favourite.
+                entry_data = {
+                    **user_input,
+                    "favourite_search_radius": user_input["radius"],
+                }
+
                 return self.async_create_entry(
                     title=f"UK Fuel Finder - {user_input['location_name']}",
-                    data=user_input,
+                    data=entry_data,
                 )
 
         return self.async_show_form(
@@ -111,9 +122,14 @@ class FuelFinderConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ):
                 errors["base"] = "already_configured"
             else:
+                # Merge rather than replace entry.data outright - this form
+                # doesn't include every field (e.g. favourite_search_radius
+                # is deliberately frozen and never editable here), and a
+                # full replace would silently wipe anything not in this
+                # specific schema.
                 self.hass.config_entries.async_update_entry(
                     reconfigure_entry,
-                    data=user_input,
+                    data={**reconfigure_entry.data, **user_input},
                     title=f"UK Fuel Finder - {user_input['location_name']}",
                 )
                 # No explicit reload here - the update listener registered in

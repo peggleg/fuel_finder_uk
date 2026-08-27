@@ -11,7 +11,7 @@ from .coordinator import FuelFinderDataCoordinator
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 
 DOMAIN: Final = "fuel_finder_uk"
-PLATFORMS: Final = [Platform.SENSOR]
+PLATFORMS: Final = [Platform.SENSOR, Platform.SELECT]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
