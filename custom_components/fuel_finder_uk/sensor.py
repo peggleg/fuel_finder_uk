@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from . import DOMAIN
+from .coordinator import get_opening_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ class FuelFinderCheapestPriceSensor(FuelFinderBaseSensor):
             "last_updated": cheapest.get("last_updated"),
             "distance": station.get("distance"),
             "distance_driving": station.get("distance_driving"),
+            "opening_status": get_opening_status(station),
         }
 
 
@@ -252,6 +254,7 @@ class FuelFinderFavouritePriceSensor(FuelFinderBaseSensor):
             "last_updated": favourite.get("last_updated"),
             "distance": station.get("distance"),
             "distance_driving": station.get("distance_driving"),
+            "opening_status": get_opening_status(station),
         }
 
 
@@ -303,6 +306,7 @@ class FuelFinderStationCountSensor(FuelFinderBaseSensor):
                     "distance_driving_miles": station.get("distance_driving"),
                     "postcode": location.get("postcode"),
                     "fuel_types": station.get("fuel_types"),
+                    "opening_status": get_opening_status(station),
                 }
             )
 

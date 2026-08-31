@@ -68,6 +68,121 @@ def find_station_by_id(records: list[dict], target_id: str) -> dict | None:
     return None
 
 
+def is_closed(station: dict) -> bool:
+    """Check whether a station is temporarily or permanently closed.
+
+    permanent_closure_date is treated as pure metadata, not a signal in its
+    own right - every sample seen from the live API has it null whenever
+    permanent_closure is false, with no evidence of a "scheduled future
+    closure" pattern that would need separate handling.
+    """
+    return bool(station.get("temporary_closure")) or bool(station.get("permanent_closure"))
+
+
+DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _parse_day_hours(day_hours: dict | None) -> tuple | None:
+    """Parse one day's opening_times entry into an (open, close) time pair.
+
+    Returns None - meaning "we don't have trustworthy hours for this day" -
+    for three distinct cases, all treated the same way rather than guessed
+    at: hours missing entirely, the 00:00:00-00:00:00 pattern (which marks
+    hours as simply not reported by the retailer, not a genuine 24h
+    closure), and close-time not after open-time (an unconfirmed pattern
+    in this dataset - possibly overnight hours wrapping past midnight,
+    possibly bad data - treated as anomalous rather than trusted either way).
+    """
+    if not day_hours:
+        return None
+
+    open_str = day_hours.get("open")
+    close_str = day_hours.get("close")
+
+    if not open_str or not close_str:
+        return None
+
+    if open_str == "00:00:00" and close_str == "00:00:00":
+        return None
+
+    try:
+        open_time = dt_util.parse_time(open_str)
+        close_time = dt_util.parse_time(close_str)
+    except (ValueError, TypeError):
+        return None
+
+    if open_time is None or close_time is None:
+        return None
+
+    if close_time <= open_time:
+        return None
+
+    return open_time, close_time
+
+
+def _find_next_opening(usual_days: dict, today_index: int) -> str:
+    """Search forward up to 7 days for the next day with real, reported hours.
+
+    Stops immediately at the first unreported/anomalous day encountered,
+    rather than skipping past it to keep guessing - consistent with how
+    today's own hours are handled. A week is a hard cap since usual_days
+    only ever has 7 distinct entries; there's no more information beyond it.
+    """
+    for offset in range(1, 8):
+        check_index = (today_index + offset) % 7
+        day_name = DAY_NAMES[check_index]
+        day_hours = usual_days.get(day_name)
+        label = "tomorrow" if offset == 1 else day_name.capitalize()
+
+        if day_hours and day_hours.get("is_24_hours"):
+            return f"Closed - opens {label} (24 hours)"
+
+        parsed = _parse_day_hours(day_hours)
+        if parsed is None:
+            return "Next opening unknown"
+
+        open_time, _ = parsed
+        return f"Closed - opens {label} at {open_time.strftime('%H:%M')}"
+
+    return "Next opening unknown"
+
+
+def get_opening_status(station: dict) -> str:
+    """Compute a plain-English opening status for a station, right now.
+
+    Bank holidays are not modelled - the normal weekly schedule always
+    applies, even on a bank holiday itself.
+    """
+    opening_times = station.get("opening_times") or {}
+    usual_days = opening_times.get("usual_days") or {}
+
+    if not usual_days:
+        return "Opening hours not available"
+
+    now = dt_util.now()
+    today_index = now.weekday()  # Monday = 0
+    today_name = DAY_NAMES[today_index]
+    today_hours = usual_days.get(today_name)
+
+    if today_hours and today_hours.get("is_24_hours"):
+        return "Open 24 hours"
+
+    parsed = _parse_day_hours(today_hours)
+    if parsed is None:
+        return "Opening hours not available"
+
+    open_time, close_time = parsed
+    current_time = now.time()
+
+    if open_time <= current_time < close_time:
+        return f"Open until {close_time.strftime('%H:%M')}"
+
+    if current_time < open_time:
+        return f"Opens today at {open_time.strftime('%H:%M')}"
+
+    return _find_next_opening(usual_days, today_index)
+
+
 class FuelFinderDataCoordinator(DataUpdateCoordinator):
     """Data coordinator for Fuel Finder API."""
 
@@ -504,7 +619,13 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
         self.async_set_updated_data(self.data)
 
     def _filter_nearby_stations(self, stations_data: dict, radius: float | None = None) -> list[dict]:
-        """Filter stations within radius (defaults to the live, reconfigurable radius)."""
+        """Filter stations within radius (defaults to the live, reconfigurable radius).
+
+        Also excludes temporarily and permanently closed stations. Since
+        this one method backs the cheapest-price calculation, the nearby
+        stations list, and the favourite-picker dropdown, all three get
+        this exclusion automatically.
+        """
         if radius is None:
             radius = self.radius
 
@@ -534,10 +655,19 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
             _LOGGER.debug(f"Sample station record keys: {list(stations[0].keys())}")
         
         filtered = []
+        closed_count = 0
         
         for station in stations:
             try:
                 if not isinstance(station, dict):
+                    continue
+
+                if is_closed(station):
+                    closed_count += 1
+                    name = station.get("trading_name") or station.get("name")
+                    postcode = (station.get("location") or {}).get("postcode")
+                    reason = "permanent" if station.get("permanent_closure") else "temporary"
+                    _LOGGER.debug(f"Skipping closed station ({reason}): {name}, {postcode}")
                     continue
                 
                 # Coordinates are nested under "location" in the real API schema,
@@ -574,7 +704,10 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(f"Error processing station: {err}")
                 continue
         
-        _LOGGER.debug(f"Found {len(filtered)} stations within {radius}mi from {len(stations)} total")
+        _LOGGER.debug(
+            f"Found {len(filtered)} stations within {radius}mi from {len(stations)} total "
+            f"({closed_count} excluded as closed)"
+        )
         return filtered
 
     async def _async_enrich_driving_distances(
@@ -837,9 +970,15 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
         """Get the favourite station's price for a specific fuel type.
 
         Returns None if no favourite is selected, the favourite couldn't be
-        found in the latest data, or the favourite doesn't sell this fuel
-        type. Unlike get_cheapest_price, this looks up one specific station
-        rather than searching for a minimum.
+        found in the latest data, the favourite is currently closed, or the
+        favourite doesn't sell this fuel type. Unlike get_cheapest_price,
+        this looks up one specific station rather than searching for a
+        minimum.
+
+        Closure is checked here rather than at resolution time - the
+        favourite's own selection (and its descriptive info on the select
+        entity) is preserved even while closed, only the price goes
+        unavailable, resuming automatically once the station reopens.
         """
         if not self.data:
             return None
@@ -848,6 +987,9 @@ class FuelFinderDataCoordinator(DataUpdateCoordinator):
         favourite_price_record = self.data.get("favourite_price_record")
 
         if not favourite_station or not favourite_price_record:
+            return None
+
+        if is_closed(favourite_station):
             return None
 
         try:
